@@ -2,20 +2,22 @@ import requests
 import re
 import json
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
+# ---------------- APP SETUP ----------------
 app = Flask(__name__)
+CORS(app)  # ✅ FIXES "Failed to fetch" (CORS issue)
 
-# 🔥 Firebase (your database)
+# ---------------- FIREBASE ----------------
 FIREBASE_DB_URL = "https://trackingclients-default-rtdb.firebaseio.com/emails.json"
 
-# 🚫 blocked domains
+# ---------------- SETTINGS ----------------
 EXCLUDED_DOMAINS = {
     "sentry.wixpress.com",
     "sentry-next.wixpress.com"
 }
 
 # ---------------- EMAIL EXTRACTION ----------------
-
 def extract_emails(html):
     pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
     return list(set(re.findall(pattern, html)))
@@ -39,24 +41,18 @@ def is_valid_email(email):
     return True
 
 
-# ---------------- SCRAPE WEBSITE ----------------
-
+# ---------------- SCRAPE FUNCTION ----------------
 def scrape_url(url):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-        return extract_emails(response.text)
-
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        return extract_emails(r.text)
     except Exception as e:
-        print("Error scraping:", url, e)
+        print("Scrape error:", url, e)
         return []
 
 
 # ---------------- SAVE TO FIREBASE ----------------
-
 def save_to_firebase(email):
     try:
         requests.post(
@@ -67,8 +63,7 @@ def save_to_firebase(email):
         print("Firebase error:", e)
 
 
-# ---------------- API ENDPOINT ----------------
-
+# ---------------- API ROUTE ----------------
 @app.route("/scrape", methods=["POST"])
 def scrape():
     data = request.json
@@ -76,7 +71,7 @@ def scrape():
     if not data or "urls" not in data:
         return jsonify({"error": "No URLs provided"}), 400
 
-    urls = data["urls"][:100]   # 🔥 limit to 100
+    urls = data["urls"][:100]  # limit 100
 
     all_emails = set()
 
@@ -88,7 +83,6 @@ def scrape():
             if is_valid_email(email):
                 all_emails.add(email)
 
-    # save to firebase
     for email in all_emails:
         save_to_firebase(email)
 
@@ -100,13 +94,11 @@ def scrape():
 
 
 # ---------------- HEALTH CHECK ----------------
-
 @app.route("/")
 def home():
     return "Email Scraper API is running 🚀"
 
 
-# ---------------- RUN ----------------
-
+# ---------------- RUN SERVER ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
