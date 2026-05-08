@@ -1,12 +1,12 @@
 import requests
 import re
 import json
+import time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# ---------------- APP SETUP ----------------
 app = Flask(__name__)
-CORS(app)  # ✅ FIXES "Failed to fetch" (CORS issue)
+CORS(app)
 
 # ---------------- FIREBASE ----------------
 FIREBASE_DB_URL = "https://trackingclients-default-rtdb.firebaseio.com/emails.json"
@@ -17,16 +17,24 @@ EXCLUDED_DOMAINS = {
     "sentry-next.wixpress.com"
 }
 
+CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/impressum"]
+
+# ---------------- CLEAN URL ----------------
+def clean_url(url):
+    url = url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+    return url
+
 # ---------------- EMAIL EXTRACTION ----------------
-def extract_emails(html):
+def extract_emails(text):
     pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    return list(set(re.findall(pattern, html)))
+    return list(set(re.findall(pattern, text)))
 
 
 def is_valid_email(email):
     if any(email.lower().endswith(x) for x in [".png", ".jpg", ".jpeg", ".gif"]):
         return False
-
     if ".." in email:
         return False
 
@@ -34,71 +42,84 @@ def is_valid_email(email):
     if domain in EXCLUDED_DOMAINS:
         return False
 
-    local = email.split("@")[0]
-    if len(local) < 2 or len(local) > 50:
-        return False
-
     return True
 
-
-# ---------------- SCRAPE FUNCTION ----------------
+# ---------------- SCRAPER ----------------
 def scrape_url(url):
+    emails = set()
+    headers = {"User-Agent": "Mozilla/5.0"}
+
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=10)
-        return extract_emails(r.text)
+        emails.update(extract_emails(r.text))
+
+        # try contact pages
+        for path in CONTACT_PATHS:
+            try:
+                r2 = requests.get(url.rstrip("/") + path, headers=headers, timeout=5)
+                emails.update(extract_emails(r2.text))
+            except:
+                pass
+
     except Exception as e:
-        print("Scrape error:", url, e)
-        return []
+        print("Error scraping:", url, e)
 
+    return list(emails)
 
-# ---------------- SAVE TO FIREBASE ----------------
-def save_to_firebase(email):
+# ---------------- FIREBASE SAVE ----------------
+def save_to_firebase(email, session_id):
+    url = f"https://trackingclients-default-rtdb.firebaseio.com/sessions/{session_id}.json"
     try:
-        requests.post(
-            FIREBASE_DB_URL,
-            data=json.dumps({"email": email})
-        )
-    except Exception as e:
-        print("Firebase error:", e)
+        requests.post(url, data=json.dumps({"email": email}))
+    except:
+        pass
 
-
-# ---------------- API ROUTE ----------------
+# ---------------- API ----------------
 @app.route("/scrape", methods=["POST"])
 def scrape():
-    data = request.json
 
-    if not data or "urls" not in data:
-        return jsonify({"error": "No URLs provided"}), 400
+    raw = request.data.decode("utf-8").strip()
+    urls = []
 
-    urls = data["urls"][:100]  # limit 100
+    # JSON input
+    try:
+        data = request.get_json(silent=True)
+        if data and "urls" in data:
+            urls = data["urls"]
+        else:
+            urls = raw.splitlines()
+    except:
+        urls = raw.splitlines()
 
+    # clean + limit
+    urls = [clean_url(u) for u in urls if u.strip()]
+    urls = urls[:100]
+
+    session_id = str(int(time.time()))
     all_emails = set()
 
     for url in urls:
         print("Scraping:", url)
+
         emails = scrape_url(url)
 
         for email in emails:
             if is_valid_email(email):
                 all_emails.add(email)
-
-    for email in all_emails:
-        save_to_firebase(email)
+                save_to_firebase(email, session_id)
 
     return jsonify({
         "status": "success",
+        "session_id": session_id,
         "total_emails": len(all_emails),
         "emails": list(all_emails)
     })
-
 
 # ---------------- HEALTH CHECK ----------------
 @app.route("/")
 def home():
     return "Email Scraper API is running 🚀"
 
-
-# ---------------- RUN SERVER ----------------
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
